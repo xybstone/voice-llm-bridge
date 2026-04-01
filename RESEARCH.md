@@ -24,19 +24,15 @@
 **Apple Silicon 兼容性**：
 | 推理方式 | 支持度 | 说明 |
 |---------|--------|------|
+| MLX | ✅ 推荐 | Apple 官方框架，统一内存优化最佳 |
 | PyTorch (MPS) | ✅ 支持 | 通过 PyTorch 2.0+ MPS 后端 |
-| MLX | ⚠️ 待验证 | 需转换权重到 MLX 格式 |
-| vLLM | ⚠️ 待验证 | vLLM 对 MPS 支持有限 |
 | Transformers | ✅ 支持 | 官方推荐方式 |
 
-**推荐方案**：PyTorch + MPS (Metal Performance Shaders)
-```python
-import torch
-device = "mps" if torch.backends.mps.is_available() else "cpu"
-model.to(device)
-```
+**推荐方案**：MLX (与 ASR 统一技术栈，内存共享更高效)
 
-**内存占用**：约 1-2GB (FP16)
+**内存占用**：
+- FP16: ~1GB
+- 4bit 量化：~0.5GB
 
 ---
 
@@ -51,18 +47,15 @@ model.to(device)
 **Apple Silicon 兼容性**：
 | 推理方式 | 支持度 | 说明 |
 |---------|--------|------|
+| MLX | ✅ 推荐 | MLX 针对 Apple Silicon 优化，支持 4bit 量化 |
 | PyTorch (MPS) | ⚠️ 勉强 | 7B 模型 MPS 可能 OOM |
-| MLX | ✅ 推荐 | MLX 针对 Apple Silicon 优化 |
-| vLLM | ❌ 不支持 | vLLM 主要针对 NVIDIA GPU |
-| Transformers | ⚠️ 慢 | CPU  fallback 会很慢 |
+| Transformers | ⚠️ 慢 | CPU fallback 会很慢 |
 
-**推荐方案**：MLX (Apple 官方优化框架)
-```python
-import mlx.core as mx
-# 需将模型权重转换为 MLX 格式
-```
+**推荐方案**：MLX + 4bit 量化
 
-**内存占用**：约 14-16GB (FP16)，MLX 量化后可降至 8GB
+**内存占用**：
+- FP16: ~14GB
+- 4bit 量化：~4-5GB (含激活开销)
 
 **替代方案**：Whisper (OpenAI)
 - 参数更小 (large-v3: 1.5B)
@@ -153,19 +146,19 @@ Voice Bridge → OpenClaw Gateway (WebSocket) → AI Session → 返回响应
 | OpenClaw 连接 | WebSocket (ws 库) | aiohttp |
 | 流程编排 | asyncio | threading |
 
-### 3.3 延迟估算
+### 3.3 延迟估算 (MLX + 4bit 量化)
 
 | 阶段 | 预估延迟 | 说明 |
 |------|---------|------|
-| ASR (7B, MLX) | 2-5 秒 | 60 分钟音频需分块处理 |
+| ASR (7B, MLX 4bit) | 1-3 秒 | 统一内存带宽优势，量化后推理更快 |
 | OpenClaw 响应 | 1-3 秒 | 取决于模型负载 |
-| TTS (0.5B) | 0.3-1 秒 | 流式输出，首音 300ms |
-| **总延迟** | **3.3-9 秒** | 非实时，但可接受 |
+| TTS (0.5B, MLX 4bit) | 0.3-1 秒 | 流式输出，首音 300ms |
+| **总延迟** | **2.3-7 秒** | 可优化到 2-4 秒 (流式 ASR) |
 
 **优化方向**：
-1. ASR 用 Whisper small/medium 替代 (更快)
-2. 流式 ASR (边说边转写)
-3. 流式 TTS (边生成边播放)
+1. 流式 ASR (VibeVoice-ASR 支持分块流式)
+2. 流式 TTS (VibeVoice-Realtime 原生支持)
+3.  Pipeline 并行 (ASR 完成后立即 TTS，不等 OpenClaw 结束)
 
 ---
 
@@ -178,19 +171,19 @@ Voice Bridge → OpenClaw Gateway (WebSocket) → AI Session → 返回响应
 - 内存：24-48GB 统一内存
 - 带宽：~200GB/s
 
-### 4.2 模型运行可行性
+### 4.2 模型运行可行性 (MLX + 4bit 量化)
 
-| 模型 | 内存需求 | M4 Pro 可行性 |
-|------|---------|--------------|
-| VibeVoice-ASR (7B) | 14-16GB (FP16) | ✅ 可运行 (建议量化到 8GB) |
-| VibeVoice-Realtime (0.5B) | 1-2GB | ✅ 轻松运行 |
-| **同时运行** | **~18GB** | ⚠️ 24GB 内存紧张，建议 36GB+ |
+| 模型 | 内存需求 (量化后) | M4 Pro 可行性 |
+|------|------------------|--------------|
+| VibeVoice-ASR (7B) | ~4-5GB | ✅ 轻松运行 |
+| VibeVoice-Realtime (0.5B) | ~0.5GB | ✅ 轻松运行 |
+| **同时运行** | **~5-6GB** | ✅ 24GB 绰绰有余 |
 
 ### 4.3 优化建议
 
-1. **模型量化**：ASR 用 4bit/8bit 量化 (MLX 支持)
-2. **内存管理**：ASR/TTS 交替加载，不常驻
-3. **批处理**：ASR 分块处理 (每 5-10 分钟一段)
+1. **统一 MLX 技术栈**：ASR + TTS 都用 MLX，内存共享更高效
+2. **4bit 量化**：MLX 原生支持，精度损失小，内存降低 75%
+3. **统一内存优势**：M4 Pro 的 24GB 统一内存可同时加载两个模型，无需交替
 
 ---
 
@@ -283,12 +276,18 @@ voice-llm-bridge/
 
 ## 8. 结论
 
-**可行性**：✅ 可行，但有约束
+**可行性**：✅ 可行，24GB 内存足够
 
 **推荐配置**：
-- Mac mini M4 Pro 36GB+ 内存
-- ASR: VibeVoice-ASR (MLX) 或 Whisper large-v3
-- TTS: VibeVoice-Realtime (PyTorch MPS)
-- 延迟：3-9 秒 (可优化到 2-5 秒)
+- Mac mini M4 Pro 24GB+ 内存 (统一内存优势)
+- ASR: VibeVoice-ASR (MLX + 4bit 量化)
+- TTS: VibeVoice-Realtime (MLX + 4bit 量化)
+- 延迟：2-7 秒 (流式优化后可到 2-4 秒)
+- 内存占用：~5-6GB (两个模型同时加载)
 
-**建议**：先做原型验证 Phase 1，确认模型在 M4 Pro 上的实际性能后再决定继续或调整方案。
+**技术栈**：
+- 统一使用 MLX 框架 (Apple Silicon 最优解)
+- 4bit 量化降低内存 75%，精度损失可接受
+- 统一内存架构让 24GB 实际可用内存远超传统架构
+
+**建议**：先做原型验证 Phase 1，确认 MLX 对两个模型的支持情况和实际性能。
